@@ -56,6 +56,20 @@ localflow --cli      # terminal mode: record until Enter, then transcribe
 localflow --cli --duration 5
 ```
 
+## Window controls
+
+The widget window has standard macOS **traffic light buttons** in the top-left
+corner:
+
+- **Red (close)** — quit the app
+- **Yellow (minimize)** — minimize the widget to the Dock (click the Dock icon
+  to restore it)
+- **Green (zoom)** — reserved for the fixed-size widget (size does not change)
+
+**Right-click the pill** to change microphone, ASR model, cleanup settings, and
+more. You can also drag the pill to the **bottom-right corner** of the screen to
+quit.
+
 ## Permissions (one-time)
 
 System Settings → Privacy & Security. With the app bundle the grants attach
