@@ -17,7 +17,7 @@ import time
 import objc
 from AppKit import (
     NSApplication,
-    NSApplicationActivationPolicyAccessory,
+    NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
     NSBezierPath,
     NSColor,
@@ -25,6 +25,7 @@ from AppKit import (
     NSFont,
     NSFontWeightMedium,
     NSMakeRect,
+    NSMakeSize,
     NSMenu,
     NSMenuItem,
     NSNumber,
@@ -35,15 +36,26 @@ from AppKit import (
     NSScreen,
     NSString,
     NSTimer,
+    NSTrackingActiveAlways,
+    NSTrackingArea,
+    NSTrackingInVisibleRect,
+    NSTrackingMouseEnteredAndExited,
     NSView,
     NSVisualEffectBlendingModeBehindWindow,
     NSVisualEffectMaterialHUDWindow,
     NSVisualEffectStateActive,
     NSVisualEffectView,
+    NSWindowCloseButton,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorIgnoresCycle,
-    NSWindowStyleMaskBorderless,
-    NSWindowStyleMaskNonactivatingPanel,
+    NSWindowMiniaturizeButton,
+    NSWindowStyleMaskClosable,
+    NSWindowStyleMaskFullSizeContentView,
+    NSWindowStyleMaskMiniaturizable,
+    NSWindowStyleMaskResizable,
+    NSWindowStyleMaskTitled,
+    NSWindowTitleHidden,
+    NSWindowZoomButton,
 )
 
 from localflow.capture import list_audio_devices
@@ -53,6 +65,10 @@ log = logging.getLogger(__name__)
 
 PANEL_WIDTH = 190
 PANEL_HEIGHT = 44
+TITLE_BAR_BASE = 22
+TRAFFIC_LIGHT_MARGIN = 8
+TITLE_BAR_INSET = TITLE_BAR_BASE + TRAFFIC_LIGHT_MARGIN
+WINDOW_HEIGHT = PANEL_HEIGHT + TITLE_BAR_INSET
 CORNER_RADIUS = PANEL_HEIGHT / 2
 
 HOLD_THRESHOLD = 0.3
@@ -107,17 +123,27 @@ STATE_ERROR = 4
 ASR_MODELS = ("base", "small", "large-v3-turbo")
 CLEANUP_MODELS = ("qwen2.5:7b", "llama3.2:3b")
 
+PANEL_STYLE_MASK = (
+    NSWindowStyleMaskTitled
+    | NSWindowStyleMaskClosable
+    | NSWindowStyleMaskMiniaturizable
+    | NSWindowStyleMaskResizable
+    | NSWindowStyleMaskFullSizeContentView
+)
+
 
 def get_screen_frame():
     """Return the main screen frame."""
     return NSScreen.mainScreen().frame()
 
 
-def is_near_close_zone(window_origin: NSPoint) -> bool:
+def is_near_close_zone(window_origin: NSPoint, width: float, height: float) -> bool:
     """Return True when the panel center is inside the bottom-right close zone.
 
     Args:
         window_origin: Bottom-left origin of the panel in screen coordinates.
+        width: Panel width in points.
+        height: Panel height in points.
 
     Returns:
         True when releasing here should close the widget.
@@ -125,16 +151,18 @@ def is_near_close_zone(window_origin: NSPoint) -> bool:
     screen = get_screen_frame()
     sw = screen.size.width
     sb = screen.origin.y
-    cx = window_origin.x + PANEL_WIDTH / 2
-    cy = window_origin.y + PANEL_HEIGHT / 2
+    cx = window_origin.x + width / 2
+    cy = window_origin.y + height / 2
     return (sw - cx) < CLOSE_ZONE and (cy - sb) < CLOSE_ZONE
 
 
-def clamp_to_screen(origin: NSPoint) -> NSPoint:
-    """Clamp a panel origin so the whole capsule stays on the visible screen.
+def clamp_to_screen(origin: NSPoint, width: float, height: float) -> NSPoint:
+    """Clamp a panel origin so the whole window stays on the visible screen.
 
     Args:
         origin: Desired bottom-left origin of the panel.
+        width: Window width in points.
+        height: Window height in points.
 
     Returns:
         The origin clamped to the visible frame.
@@ -142,11 +170,11 @@ def clamp_to_screen(origin: NSPoint) -> NSPoint:
     screen = NSScreen.mainScreen().visibleFrame()
     x = max(
         screen.origin.x,
-        min(origin.x, screen.origin.x + screen.size.width - PANEL_WIDTH),
+        min(origin.x, screen.origin.x + screen.size.width - width),
     )
     y = max(
         screen.origin.y,
-        min(origin.y, screen.origin.y + screen.size.height - PANEL_HEIGHT),
+        min(origin.y, screen.origin.y + screen.size.height - height),
     )
     return NSPoint(x, y)
 
@@ -180,14 +208,14 @@ def _capsule_path(w: float, h: float) -> NSBezierPath:
     )
 
 
-def _install_backdrop(panel: NSPanel) -> bool:
-    """Install a frosted-glass NSVisualEffectView as the panel content view.
+def _install_pill_backdrop(parent: NSView) -> bool:
+    """Install a frosted-glass capsule backdrop for the pill body only.
 
-    The effect view uses the HUD window material blended with the content
-    behind the window and is masked to the capsule shape through its layer.
+    The title-bar region above the pill stays transparent so the traffic-light
+    buttons appear to float over the desktop.
 
     Args:
-        panel: The panel to receive the backdrop.
+        parent: Container view that holds the pill backdrop and widget.
 
     Returns:
         True when the backdrop was installed, False when the caller should
@@ -206,7 +234,7 @@ def _install_backdrop(panel: NSPanel) -> bool:
             return False
         layer.setCornerRadius_(CORNER_RADIUS)
         layer.setMasksToBounds_(True)
-        panel.setContentView_(effect)
+        parent.addSubview_(effect)
     except (AttributeError, ValueError, objc.error):
         log.exception("Visual effect backdrop unavailable; using solid capsule")
         return False
@@ -214,27 +242,41 @@ def _install_backdrop(panel: NSPanel) -> bool:
 
 
 def _has_backdrop(panel: NSPanel) -> bool:
-    """Return True when the panel content view is a visual effect view."""
-    view = panel.contentView()
-    return view is not None and view.isKindOfClass_(NSVisualEffectView)
+    """Return True when the panel container includes a visual effect backdrop."""
+    container = panel.contentView()
+    if container is None:
+        return False
+    for subview in container.subviews():
+        if subview.isKindOfClass_(NSVisualEffectView):
+            return True
+    return False
 
 
 def create_panel(config: AppConfig) -> NSPanel:
-    """Create the non-activating floating panel that hosts the capsule widget.
+    """Create a floating panel with transparent title bar and pill body.
 
     Args:
         config: Application configuration providing the persisted window origin.
 
     Returns:
-        A configured, borderless, always-on-top NSPanel with a frosted-glass
-        content view when the visual effect material is available.
+        A configured NSPanel with traffic-light buttons floating above the
+        frosted capsule content view when the visual effect material is available.
     """
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-        NSMakeRect(config.window_x, config.window_y, PANEL_WIDTH, PANEL_HEIGHT),
-        NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
+        NSMakeRect(config.window_x, config.window_y, PANEL_WIDTH, WINDOW_HEIGHT),
+        PANEL_STYLE_MASK,
         NSBackingStoreBuffered,
         False,
     )
+    panel.setTitle_("localflow")
+    panel.setTitleVisibility_(NSWindowTitleHidden)
+    panel.setTitlebarAppearsTransparent_(True)
+    try:
+        panel.setTitlebarSeparatorStyle_(1)
+    except (AttributeError, ValueError, objc.error):
+        pass
+    panel.setMinSize_(NSMakeSize(PANEL_WIDTH, WINDOW_HEIGHT))
+    panel.setMaxSize_(NSMakeSize(PANEL_WIDTH, WINDOW_HEIGHT))
     panel.setFloatingPanel_(True)
     panel.setBecomesKeyOnlyIfNeeded_(True)
     panel.setHidesOnDeactivate_(False)
@@ -244,12 +286,88 @@ def create_panel(config: AppConfig) -> NSPanel:
     panel.setLevel_(3)
     panel.setAcceptsMouseMovedEvents_(True)
     panel.setWorksWhenModal_(True)
+    panel.setMovableByWindowBackground_(True)
     panel.setCollectionBehavior_(
         NSWindowCollectionBehaviorCanJoinAllSpaces
         | NSWindowCollectionBehaviorIgnoresCycle
     )
-    _install_backdrop(panel)
+    container = NSView.alloc().initWithFrame_(
+        NSMakeRect(0, 0, PANEL_WIDTH, WINDOW_HEIGHT)
+    )
+    panel.setContentView_(container)
+    _install_pill_backdrop(container)
     return panel
+
+
+class PanelDelegate(NSObject):
+    """Quit the application when the user closes the widget window."""
+
+    def windowShouldClose_(self, sender):
+        NSApplication.sharedApplication().terminate_(None)
+        return True
+
+
+_TRAFFIC_LIGHT_KINDS = (
+    NSWindowCloseButton,
+    NSWindowMiniaturizeButton,
+    NSWindowZoomButton,
+)
+
+
+def _set_traffic_lights_visible(panel: NSPanel, visible: bool) -> None:
+    """Show or hide the standard window close, minimize, and zoom buttons."""
+    for kind in _TRAFFIC_LIGHT_KINDS:
+        button = panel.standardWindowButton_(kind)
+        if button is not None:
+            button.setHidden_(not visible)
+
+
+class TrafficLightHoverController(NSObject):
+    """Reveal window traffic-light buttons while the pointer is over the panel."""
+
+    panel = objc.ivar()
+    tracking_area = objc.ivar()
+
+    def installWithPanel_(self, panel):
+        """Hide the traffic-light buttons and track pointer enter/exit on the panel.
+
+        Args:
+            panel: The widget window whose standard buttons should auto-hide.
+        """
+        self.panel = panel
+        _set_traffic_lights_visible(panel, False)
+        view = panel.contentView()
+        if view is None:
+            return
+        options = (
+            NSTrackingMouseEnteredAndExited
+            | NSTrackingActiveAlways
+            | NSTrackingInVisibleRect
+        )
+        area = NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+            view.bounds(), options, self, None
+        )
+        view.addTrackingArea_(area)
+        self.tracking_area = area
+
+    def mouseEntered_(self, event):
+        _set_traffic_lights_visible(self.panel, True)
+
+    def mouseExited_(self, event):
+        if not self._pointer_in_panel():
+            _set_traffic_lights_visible(self.panel, False)
+
+    def _pointer_in_panel(self) -> bool:
+        """Return True when the cursor is still inside the panel frame."""
+        panel = self.panel
+        if panel is None:
+            return False
+        loc = NSEvent.mouseLocation()
+        frame = panel.frame()
+        return (
+            frame.origin.x <= loc.x <= frame.origin.x + frame.size.width
+            and frame.origin.y <= loc.y <= frame.origin.y + frame.size.height
+        )
 
 
 class FlowWidget(NSView):
@@ -503,8 +621,12 @@ class FlowWidget(NSView):
             )
             self.panel.setFrameOrigin_(new_origin)
 
+            frame = self.panel.frame()
+            size = frame.size
             was_near = self.near_close_zone
-            self.near_close_zone = is_near_close_zone(new_origin)
+            self.near_close_zone = is_near_close_zone(
+                new_origin, size.width, size.height
+            )
             if was_near != self.near_close_zone:
                 self.setNeedsDisplay_(True)
 
@@ -518,11 +640,13 @@ class FlowWidget(NSView):
             self.near_close_zone = False
             self.setNeedsDisplay_(True)
 
-            if is_near_close_zone(self.panel.frame().origin):
+            frame = self.panel.frame()
+            size = frame.size
+            if is_near_close_zone(frame.origin, size.width, size.height):
                 NSApplication.sharedApplication().terminate_(None)
                 return
 
-            origin = clamp_to_screen(self.panel.frame().origin)
+            origin = clamp_to_screen(frame.origin, size.width, size.height)
             self.panel.setFrameOrigin_(origin)
             self._save_position(origin)
             return
@@ -634,22 +758,8 @@ class FlowWidget(NSView):
         self.setNeedsDisplay_(True)
 
 
-def _build_context_menu(controller, handler) -> NSMenu:
-    """Build the right-click settings menu.
-
-    Args:
-        controller: The FlowController exposing configuration and actions.
-        handler: The MenuHandler object that receives the menu actions.
-
-    Returns:
-        The populated context menu.
-    """
-    config = controller.config
-    menu = NSMenu.alloc().initWithTitle_("localflow")
-
-    mic_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-        "Microphone", None, ""
-    )
+def _build_microphone_submenu(config: AppConfig, handler) -> NSMenu:
+    """Build the microphone picker submenu with the active device highlighted."""
     mic_sub = NSMenu.alloc().initWithTitle_("Microphone")
     for device in list_audio_devices():
         item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -660,9 +770,17 @@ def _build_context_menu(controller, handler) -> NSMenu:
         if device.id == config.microphone_id:
             item.setState_(NSOnState)
         mic_sub.addItem_(item)
-    mic_item.setSubmenu_(mic_sub)
-    menu.addItem_(mic_item)
+    return mic_sub
 
+
+def _append_settings_items(menu: NSMenu, config: AppConfig, handler) -> None:
+    """Append ASR, cleanup, and utility items to a menu.
+
+    Args:
+        menu: Destination menu.
+        config: Application configuration.
+        handler: The MenuHandler receiving setting actions.
+    """
     asr_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         "ASR Model", None, ""
     )
@@ -727,13 +845,44 @@ def _build_context_menu(controller, handler) -> NSMenu:
     log_item.setTarget_(handler)
     menu.addItem_(log_item)
 
-    menu.addItem_(NSMenuItem.separatorItem())
 
+def _append_quit_item(menu: NSMenu, handler, title: str = "Quit") -> None:
+    """Append a separator and quit item to a menu.
+
+    Args:
+        menu: Destination menu.
+        handler: The MenuHandler receiving ``quit:`` actions.
+        title: Label for the quit menu item.
+    """
+    menu.addItem_(NSMenuItem.separatorItem())
     quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-        "Quit", "quit:", ""
+        title, "quit:", ""
     )
     quit_item.setTarget_(handler)
     menu.addItem_(quit_item)
+
+
+def _build_context_menu(controller, handler) -> NSMenu:
+    """Build the right-click settings menu.
+
+    Args:
+        controller: The FlowController exposing configuration and actions.
+        handler: The MenuHandler object that receives the menu actions.
+
+    Returns:
+        The populated context menu.
+    """
+    config = controller.config
+    menu = NSMenu.alloc().initWithTitle_("localflow")
+
+    mic_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Microphone", None, ""
+    )
+    mic_item.setSubmenu_(_build_microphone_submenu(config, handler))
+    menu.addItem_(mic_item)
+
+    _append_settings_items(menu, config, handler)
+    _append_quit_item(menu, handler)
 
     return menu
 
@@ -802,10 +951,12 @@ def run_app(controller) -> None:
         controller: The FlowController that owns the pipeline and settings.
     """
     app = NSApplication.sharedApplication()
-    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
 
     config = controller.config
     panel = create_panel(config)
+    panel_delegate = PanelDelegate.alloc().init()
+    panel.setDelegate_(panel_delegate)
     widget = FlowWidget.alloc().initWithFrame_panel_config_callbacks_(
         NSMakeRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
         panel,
@@ -821,8 +972,11 @@ def run_app(controller) -> None:
     widget.draws_background = not _has_backdrop(panel)
     widget.setMicName_(config.microphone_name)
     widget.setModelName_(config.asr_model)
-    panel.contentView().addSubview_(widget)
+    container = panel.contentView()
+    container.addSubview_(widget)
     panel.makeKeyAndOrderFront_(None)
+    traffic_lights = TrafficLightHoverController.alloc().init()
+    traffic_lights.installWithPanel_(panel)
 
     controller.attach_ui(widget)
     controller.start()
