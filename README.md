@@ -17,13 +17,38 @@ hotkey (hold = push-to-talk, double-tap = hands-free)
 
 ## Install
 
+Runtime dependencies first (both install options need them):
+
 ```sh
-uv venv && uv pip install -e ".[dev]"
 brew install ollama ffmpeg
 ollama pull qwen2.5:7b
 ```
 
+### Option A — app bundle (no terminal)
+
+Builds `Whisper.app` and installs it to `/Applications`, so the widget starts
+from Spotlight (Cmd+Space) or the Dock like any other Mac app:
+
+```sh
+./scripts/build_app.sh
+```
+
+The bundle is a thin launcher around this checkout's virtualenv (created
+automatically), so keep the cloned folder around and re-run the script if you
+move it. Variants: `INSTALL_DIR=~/Applications`, `APP_NAME=LocalFlow`,
+`BUILD_ONLY=1` (build `dist/` without installing). Logs from app launches go
+to `~/.config/localflow/launcher.log`.
+
+### Option B — CLI
+
+```sh
+uv venv && uv pip install -e ".[dev]"
+```
+
 ## Run
+
+Option A: launch **Whisper** from Spotlight — the floating widget appears and
+the global hotkey is live. Option B:
 
 ```sh
 localflow            # floating widget + global hotkey
@@ -33,9 +58,11 @@ localflow --cli --duration 5
 
 ## Permissions (one-time)
 
-System Settings → Privacy & Security:
+System Settings → Privacy & Security. With the app bundle the grants attach
+to **Whisper** (asked on first launch); with the CLI they attach to your
+terminal:
 
-- **Microphone** — for your terminal/Python on first recording.
+- **Microphone** — for the first recording.
 - **Accessibility** — required to paste into other apps and for the global hotkey.
 - **Input Monitoring** — required for the global event tap.
 
