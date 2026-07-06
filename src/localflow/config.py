@@ -39,6 +39,7 @@ class AppConfig:
         max_recording_seconds: Hard cap on a single recording.
         window_x: Persisted widget window x origin.
         window_y: Persisted widget window y origin.
+        onboarding_done: Whether the first-launch tour has been dismissed.
     """
 
     language: str = "en"
@@ -56,6 +57,7 @@ class AppConfig:
     max_recording_seconds: int = 1200
     window_x: int = 100
     window_y: int = 100
+    onboarding_done: bool = False
 
     @classmethod
     def load(cls) -> AppConfig:

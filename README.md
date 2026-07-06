@@ -47,7 +47,9 @@ uv venv && uv pip install -e ".[dev]"
 ## Run
 
 Option A: launch **Whisper** from Spotlight — the floating widget appears and
-the global hotkey is live. Option B:
+the global hotkey is live. The first launch opens a short tour of the
+controls (click through or skip it; replay it any time via right-click →
+**Help**). Option B:
 
 ```sh
 localflow            # floating widget + global hotkey
@@ -65,9 +67,9 @@ buttons** in its top-left corner:
 - **Red (close)** — quit the app
 - **Green (zoom)** — reserved for the fixed-size widget (size does not change)
 
-**Right-click the pill** to change microphone, ASR model, cleanup settings, and
-more. You can also drag the pill to the **bottom-right corner** of the screen to
-quit.
+**Right-click the pill** to change microphone, ASR model, cleanup settings,
+replay the onboarding tour (**Help**), and more. You can also drag the pill to
+the **bottom-right corner** of the screen to quit.
 
 ## Permissions (one-time)
 
