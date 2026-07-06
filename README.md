@@ -17,31 +17,30 @@ hotkey (hold = push-to-talk, double-tap = hands-free)
 
 ## Install
 
-Runtime dependencies first (both install options need them):
-
-```sh
-brew install ollama ffmpeg
-ollama pull qwen2.5:7b
-```
-
-### Option A — app bundle (no terminal)
-
-Builds `Whisper.app` and installs it to `/Applications`, so the widget starts
-from Spotlight (Cmd+Space) or the Dock like any other Mac app:
+### Option A — app bundle (one command, no terminal afterwards)
 
 ```sh
 ./scripts/build_app.sh
 ```
 
+The script handles the entire first-run setup interactively: it offers to
+install anything missing (Homebrew, ffmpeg, ollama), starts the ollama
+service, pulls the cleanup model, then builds `Whisper.app` and installs it
+to `/Applications` so the widget starts from Spotlight (Cmd+Space). Re-run it
+any time — completed steps are skipped.
+
 The bundle is a thin launcher around this checkout's virtualenv (created
 automatically), so keep the cloned folder around and re-run the script if you
-move it. Variants: `INSTALL_DIR=~/Applications`, `APP_NAME=LocalFlow`,
-`BUILD_ONLY=1` (build `dist/` without installing). Logs from app launches go
-to `~/.config/localflow/launcher.log`.
+move it. Variants: `ASSUME_YES=1` (accept every prompt, for scripted
+installs), `INSTALL_DIR=~/Applications`, `APP_NAME=LocalFlow`, `BUILD_ONLY=1`
+(build `dist/` without installing). Logs from app launches go to
+`~/.config/localflow/launcher.log`.
 
 ### Option B — CLI
 
 ```sh
+brew install ollama ffmpeg
+ollama pull qwen2.5:7b
 uv venv && uv pip install -e ".[dev]"
 ```
 
@@ -58,12 +57,12 @@ localflow --cli --duration 5
 
 ## Window controls
 
-The widget window has standard macOS **traffic light buttons** in the top-left
-corner:
+The widget is a background overlay: it floats above every app and Space,
+never steals focus from the app you are dictating into, and has no Dock icon
+or Cmd+Tab entry. Hovering over the pill reveals the **traffic light
+buttons** in its top-left corner:
 
 - **Red (close)** — quit the app
-- **Yellow (minimize)** — minimize the widget to the Dock (click the Dock icon
-  to restore it)
 - **Green (zoom)** — reserved for the fixed-size widget (size does not change)
 
 **Right-click the pill** to change microphone, ASR model, cleanup settings, and
