@@ -17,7 +17,7 @@ import time
 import objc
 from AppKit import (
     NSApplication,
-    NSApplicationActivationPolicyRegular,
+    NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
     NSBezierPath,
     NSColor,
@@ -51,7 +51,7 @@ from AppKit import (
     NSWindowMiniaturizeButton,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskFullSizeContentView,
-    NSWindowStyleMaskMiniaturizable,
+    NSWindowStyleMaskNonactivatingPanel,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
     NSWindowTitleHidden,
@@ -123,12 +123,15 @@ STATE_ERROR = 4
 ASR_MODELS = ("base", "small", "large-v3-turbo")
 CLEANUP_MODELS = ("qwen2.5:7b", "llama3.2:3b")
 
+# NonactivatingPanel keeps the widget from stealing focus from the app being
+# dictated into; Miniaturizable is omitted because an agent app (LSUIElement)
+# has no Dock icon to restore a minimized window from.
 PANEL_STYLE_MASK = (
     NSWindowStyleMaskTitled
     | NSWindowStyleMaskClosable
-    | NSWindowStyleMaskMiniaturizable
     | NSWindowStyleMaskResizable
     | NSWindowStyleMaskFullSizeContentView
+    | NSWindowStyleMaskNonactivatingPanel
 )
 
 
@@ -951,7 +954,7 @@ def run_app(controller) -> None:
         controller: The FlowController that owns the pipeline and settings.
     """
     app = NSApplication.sharedApplication()
-    app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
     config = controller.config
     panel = create_panel(config)
