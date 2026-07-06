@@ -20,7 +20,11 @@ import threading
 import time
 
 from localflow.asr import AsrError, Transcriber, create_transcriber
-from localflow.capture import CaptureError, RecordingSession
+from localflow.capture import (
+    CaptureError,
+    RecordingSession,
+    prefetch_audio_devices,
+)
 from localflow.cleanup import CleanupRequest, OllamaCleaner, should_clean
 from localflow.config import (
     DICTIONARY_PATH,
@@ -100,6 +104,9 @@ class _NullUI:
     def setModelName_(self, name: str) -> None:
         pass
 
+    def applyModelName_(self, name: str) -> None:
+        pass
+
 
 class FlowController:
     """Coordinates capture, transcription, cleanup, and insertion.
@@ -121,13 +128,16 @@ class FlowController:
         Args:
             config: Application configuration.
             dictionary: User dictionary for biasing and replacements.
-            transcriber: ASR transcriber, or None when the backend failed to
-                initialize (the widget still runs so the user can switch model).
+            transcriber: ASR transcriber, or None to create it lazily on the
+                warm-up thread so the UI can appear before the heavy backend
+                import (the widget runs either way; dictation waits until the
+                model is ready).
             cleaner: Ollama-backed text cleaner.
         """
         self.__config = config
         self.__dictionary = dictionary
         self.__transcriber = transcriber
+        self.__transcriber_failed = False
         self.__cleaner = cleaner
         self.__ui: object = _NullUI()
         self.__lock = threading.Lock()
@@ -148,14 +158,19 @@ class FlowController:
         Args:
             ui: An object exposing the widget state methods (showRecording,
                 showTranscribing, showSuccess, showError, applyLevel_,
-                setMicName_, setModelName_).
+                setMicName_, setModelName_, applyModelName_).
         """
         self.__ui = ui
 
     def start(self) -> None:
-        """Warm the models in the background and start the global hotkey."""
+        """Warm the models in the background and start the global hotkey.
+
+        Also prefetches the microphone list so the first right-click menu
+        opens instantly instead of waiting on ffmpeg device enumeration.
+        """
         threading.Thread(target=self.__warm_transcriber, daemon=True).start()
         threading.Thread(target=self.__warm_cleaner, daemon=True).start()
+        prefetch_audio_devices()
         self.__start_hotkey()
 
     def __start_hotkey(self) -> None:
@@ -184,13 +199,29 @@ class FlowController:
         self.__listener = listener
 
     def __warm_transcriber(self) -> None:
+        """Create the transcriber if needed and load it, off the UI thread."""
         transcriber = self.__transcriber
         if transcriber is None:
-            return
+            self.__ui.applyModelName_("loading…")
+            try:
+                transcriber = create_transcriber(
+                    self.__config.asr_backend, self.__config.asr_model
+                )
+            except AsrError:
+                log.exception("Could not initialize ASR backend")
+                self.__transcriber_failed = True
+                self.__ui.applyModelName_(self.__config.asr_model)
+                notify(
+                    APP_NAME, "No ASR backend available. Install an engine to dictate."
+                )
+                return
+            with self.__lock:
+                self.__transcriber = transcriber
         try:
             transcriber.load()
         except Exception:
             log.exception("Transcriber warm-up failed")
+        self.__ui.applyModelName_(self.__config.asr_model)
 
     def __warm_cleaner(self) -> None:
         try:
@@ -275,7 +306,13 @@ class FlowController:
                 return
             transcriber = self.__transcriber
             if transcriber is None:
-                notify(APP_NAME, "No ASR model loaded. Pick one from the menu.")
+                if self.__transcriber_failed:
+                    notify(APP_NAME, "No ASR model loaded. Pick one from the menu.")
+                else:
+                    notify(
+                        APP_NAME,
+                        "The speech model is still loading - try again in a moment.",
+                    )
                 self.__ui.showError()
                 return
             text = transcriber.transcribe(
@@ -444,6 +481,10 @@ def run_cli(duration: float | None, no_paste: bool) -> int:
 def run_gui() -> int:
     """Launch the widget application. Imports the GUI layer lazily.
 
+    The transcriber is not created here: the heavy backend import and model
+    load happen on the controller's warm-up thread so the widget appears
+    immediately.
+
     Returns:
         Process exit code.
     """
@@ -454,16 +495,7 @@ def run_gui() -> int:
     cleaner = OllamaCleaner(
         config.ollama_url, config.cleanup_model, config.cleanup_timeout_seconds
     )
-    try:
-        transcriber: Transcriber | None = create_transcriber(
-            config.asr_backend, config.asr_model
-        )
-    except AsrError:
-        log.exception("Could not initialize ASR backend")
-        notify(APP_NAME, "No ASR backend available. Install an engine to dictate.")
-        transcriber = None
-
-    controller = FlowController(config, dictionary, transcriber, cleaner)
+    controller = FlowController(config, dictionary, None, cleaner)
     widget.run_app(controller)
     return 0
 

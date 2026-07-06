@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import struct
 import subprocess
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import numpy as np
 import pytest
@@ -306,3 +307,74 @@ def test_list_audio_devices_fallback_when_no_audio_section(
     monkeypatch.setattr(capture.subprocess, "run", fake_run)
 
     assert capture.list_audio_devices() == [AudioDevice(0, "Default")]
+
+
+# -- device cache --------------------------------------------------------------
+
+
+@pytest.fixture()
+def device_cache() -> Iterator[None]:
+    """Isolate the module-level device cache around a test."""
+    with capture._devices_cache_lock:
+        capture._devices_cache.clear()
+    yield
+    thread = capture._devices_refresh_thread
+    if thread is not None:
+        thread.join(timeout=2.0)
+    with capture._devices_cache_lock:
+        capture._devices_cache.clear()
+
+
+def _join_refresh_thread() -> None:
+    """Wait for the in-flight background device refresh to finish."""
+    thread = capture._devices_refresh_thread
+    assert thread is not None
+    thread.join(timeout=2.0)
+
+
+def test_refresh_audio_devices_updates_cache(
+    monkeypatch: pytest.MonkeyPatch, device_cache: None
+) -> None:
+    devices = [AudioDevice(0, "Mic A"), AudioDevice(1, "Mic B")]
+    monkeypatch.setattr(capture, "list_audio_devices", lambda: list(devices))
+
+    assert capture.refresh_audio_devices() == devices
+    assert capture.cached_audio_devices() == devices
+    _join_refresh_thread()
+
+
+def test_cached_audio_devices_falls_back_then_populates(
+    monkeypatch: pytest.MonkeyPatch, device_cache: None
+) -> None:
+    devices = [AudioDevice(0, "Mic A")]
+    monkeypatch.setattr(capture, "list_audio_devices", lambda: list(devices))
+
+    assert capture.cached_audio_devices() == [AudioDevice(0, "Default")]
+    _join_refresh_thread()
+    assert capture.cached_audio_devices() == devices
+    _join_refresh_thread()
+
+
+def test_prefetch_audio_devices_runs_one_refresh_at_a_time(
+    monkeypatch: pytest.MonkeyPatch, device_cache: None
+) -> None:
+    release = threading.Event()
+    calls: list[int] = []
+
+    def slow_list() -> list[AudioDevice]:
+        calls.append(1)
+        release.wait(2.0)
+        return [AudioDevice(0, "Mic A")]
+
+    monkeypatch.setattr(capture, "list_audio_devices", slow_list)
+
+    capture.prefetch_audio_devices()
+    _wait_until(lambda: len(calls) == 1)
+    capture.prefetch_audio_devices()
+    capture.prefetch_audio_devices()
+    assert len(calls) == 1
+
+    release.set()
+    _join_refresh_thread()
+    assert capture.cached_audio_devices() == [AudioDevice(0, "Mic A")]
+    _join_refresh_thread()

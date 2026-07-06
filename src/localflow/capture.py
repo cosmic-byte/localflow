@@ -81,6 +81,58 @@ def list_audio_devices() -> list[AudioDevice]:
     return devices or fallback
 
 
+_devices_cache: list[AudioDevice] = []
+_devices_cache_lock = threading.Lock()
+_devices_refresh_thread: threading.Thread | None = None
+
+
+def refresh_audio_devices() -> list[AudioDevice]:
+    """Query ffmpeg for the device list and update the cache. Blocking.
+
+    Returns:
+        The freshly enumerated devices.
+    """
+    devices = list_audio_devices()
+    with _devices_cache_lock:
+        _devices_cache[:] = devices
+    return devices
+
+
+def prefetch_audio_devices() -> None:
+    """Refresh the device cache on a background thread.
+
+    At most one refresh runs at a time; concurrent calls while a refresh is
+    in flight are no-ops.
+    """
+    global _devices_refresh_thread
+    with _devices_cache_lock:
+        thread = _devices_refresh_thread
+        if thread is not None and thread.is_alive():
+            return
+        thread = threading.Thread(target=refresh_audio_devices, daemon=True)
+        _devices_refresh_thread = thread
+    thread.start()
+
+
+def cached_audio_devices() -> list[AudioDevice]:
+    """Return the last known devices immediately, refreshing in the background.
+
+    Enumerating avfoundation devices through ffmpeg takes a couple of
+    seconds, far too slow for a context menu. This returns the cached list
+    right away (falling back to the default device when nothing has been
+    cached yet) and kicks off a background refresh so the next call sees any
+    newly plugged-in device.
+
+    Returns:
+        A snapshot of the cached devices, or `[AudioDevice(0, "Default")]`
+        when the cache is still empty.
+    """
+    with _devices_cache_lock:
+        snapshot = list(_devices_cache)
+    prefetch_audio_devices()
+    return snapshot or [AudioDevice(0, "Default")]
+
+
 def _ffmpeg_capture_command(microphone_id: int) -> list[str]:
     """Build the ffmpeg invocation that streams 16 kHz mono s16le to stdout.
 

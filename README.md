@@ -46,10 +46,11 @@ uv venv && uv pip install -e ".[dev]"
 
 ## Run
 
-Option A: launch **Whisper** from Spotlight — the floating widget appears and
-the global hotkey is live. The first launch opens a short tour of the
-controls (click through or skip it; replay it any time via right-click →
-**Help**). Option B:
+Option A: launch **Whisper** from Spotlight — the floating widget appears
+immediately and the global hotkey is live. The speech model loads in the
+background (the pill's label reads "loading…" until it is ready). The first
+launch opens a short tour of the controls (click through or skip it; replay
+it any time via right-click → **Help**). Option B:
 
 ```sh
 localflow            # floating widget + global hotkey
