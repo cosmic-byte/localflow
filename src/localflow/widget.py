@@ -58,7 +58,7 @@ from AppKit import (
     NSWindowZoomButton,
 )
 
-from localflow.capture import list_audio_devices
+from localflow.capture import cached_audio_devices
 from localflow.config import AppConfig
 from localflow.onboarding import OnboardingController
 
@@ -728,6 +728,12 @@ class FlowWidget(NSView):
             "setAudioLevel:", NSNumber.numberWithFloat_(float(level)), False
         )
 
+    def applyModelName_(self, name):
+        """Set the model label on the main thread. Thread-safe."""
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "setModelName:", NSString.stringWithString_(str(name)), False
+        )
+
     def _dispatch_state(self, state):
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "updateState:", NSNumber.numberWithInt_(state), False
@@ -765,7 +771,7 @@ class FlowWidget(NSView):
 def _build_microphone_submenu(config: AppConfig, handler) -> NSMenu:
     """Build the microphone picker submenu with the active device highlighted."""
     mic_sub = NSMenu.alloc().initWithTitle_("Microphone")
-    for device in list_audio_devices():
+    for device in cached_audio_devices():
         item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             device.name, "selectMicrophone:", ""
         )

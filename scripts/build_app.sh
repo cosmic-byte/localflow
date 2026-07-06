@@ -2,11 +2,13 @@
 # Build the macOS app bundle and install it so localflow launches from
 # Spotlight or the Dock with no terminal involved.
 #
-# The bundle is a thin launcher around this checkout's virtualenv. The
-# launcher runs python as a child process (not exec) so macOS attributes the
-# microphone, accessibility, and input-monitoring grants to the app bundle
-# instead of a terminal. Because the launcher points at this checkout's
-# .venv, re-run this script after moving or re-cloning the repository.
+# The bundle wraps this checkout's virtualenv. A copy of the interpreter
+# lives inside the bundle (Contents/MacOS) so macOS permission prompts and
+# grants (microphone, accessibility, input monitoring) show and track the
+# app's name instead of the underlying "python3.x" binary. The interpreter
+# resolves this checkout's .venv through Contents/pyvenv.cfg and a lib
+# symlink, so re-run this script after moving or re-cloning the repository
+# or after upgrading python.
 #
 # On a fresh machine the script also walks through the runtime dependencies
 # interactively: Homebrew, ffmpeg (audio capture), ollama (text cleanup),
@@ -28,6 +30,7 @@ INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 BUILD_ONLY="${BUILD_ONLY:-0}"
 ASSUME_YES="${ASSUME_YES:-0}"
 CLEANUP_MODEL="${CLEANUP_MODEL:-qwen2.5:7b}"
+ASR_MODEL="${ASR_MODEL:-large-v3-turbo}"
 OLLAMA_URL="http://localhost:11434"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -63,6 +66,25 @@ confirm() {
   case "$reply" in
     n|N|no|NO) return 1 ;;
     *) return 0 ;;
+  esac
+}
+
+# Yes/no prompt, default no, for steps that can affect other software.
+# ASSUME_YES=1 still answers yes; a non-interactive shell answers no.
+confirm_no() {
+  local question="$1" reply
+  if [ "$ASSUME_YES" = "1" ]; then
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    warn "non-interactive shell, skipping: $question (use ASSUME_YES=1 to accept)"
+    return 1
+  fi
+  printf '\033[0;36m[build-app]\033[0m %s [y/N] ' "$question"
+  read -r reply
+  case "$reply" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -124,69 +146,69 @@ ensure_runtime_deps() {
   fi
 }
 
-# Undo everything the installer set up. Every step is confirmed individually
-# so a user who shares ollama/ffmpeg with other tools can keep them; only
+# The first dictation triggers the Whisper model download inside the app,
+# where the wait is invisible; offering it here keeps it in the installer.
+ensure_asr_model() {
+  local repo hf_dir
+  repo="$("$VENV/bin/python" -c \
+    "from localflow.asr import _mlx_repo_for_model; print(_mlx_repo_for_model('$ASR_MODEL'))" \
+    2>/dev/null)" || { warn "unknown ASR model $ASR_MODEL - skipping pre-download"; return 0; }
+  hf_dir="${HF_HOME:-$HOME/.cache/huggingface}/hub/models--${repo//\//--}"
+  if [ -d "$hf_dir" ]; then
+    return 0
+  fi
+  if confirm "Pre-download the Whisper speech model $ASR_MODEL now? (~1.6 GB; otherwise it downloads on the first dictation)"; then
+    "$VENV/bin/python" -c \
+      "from localflow.asr import create_transcriber; create_transcriber('mlx', '$ASR_MODEL').load()" \
+      || warn "model pre-download failed - it will download on first use"
+  fi
+}
+
+# Undo everything the installer set up. One default-yes prompt covers the
+# app's own resources; a second, default-no prompt covers the shared
+# Homebrew tools (ollama, ffmpeg) since other software may depend on them.
 # Homebrew itself and this cloned repository are always left in place.
 uninstall() {
   local app_path="$INSTALL_DIR/$APP_NAME.app"
+  local hf_hub="${HF_HOME:-$HOME/.cache/huggingface}/hub"
 
-  if [ -d "$app_path" ] && confirm "Quit $APP_NAME and remove $app_path?"; then
+  log "Uninstall removes: $app_path, the $CLEANUP_MODEL ollama model, the"
+  log "downloaded Whisper models, ~/.config/localflow (settings, dictionary,"
+  log "logs), the build virtualenv, and the app's recorded privacy permissions."
+  if confirm "Remove all of the above?"; then
     pkill -f -- "-m localflow" 2>/dev/null || true
-    if [ -x "$LSREGISTER" ]; then
-      "$LSREGISTER" -u "$app_path" 2>/dev/null || true
+    if [ -d "$app_path" ]; then
+      if [ -x "$LSREGISTER" ]; then
+        "$LSREGISTER" -u "$app_path" 2>/dev/null || true
+      fi
+      rm -rf "$app_path"
     fi
-    rm -rf "$app_path"
-    log "removed $app_path"
+    if command -v ollama >/dev/null 2>&1 && ollama_running && \
+        ollama list 2>/dev/null | grep -qF "$CLEANUP_MODEL"; then
+      ollama rm "$CLEANUP_MODEL" || warn "could not remove the $CLEANUP_MODEL model"
+    fi
+    rm -rf "$hf_hub"/models--mlx-community--whisper-* \
+      "$HOME/.config/localflow" "$VENV" "$REPO_DIR/dist"
+    tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1 || warn \
+      "could not reset permissions - remove the $APP_NAME entries in System Settings -> Privacy & Security"
+    log "core resources removed"
   fi
 
-  if command -v ollama >/dev/null 2>&1; then
-    if ollama_running && ollama list 2>/dev/null | grep -qF "$CLEANUP_MODEL" && \
-        confirm "Remove the cleanup model $CLEANUP_MODEL (frees ~4.7 GB)?"; then
-      ollama rm "$CLEANUP_MODEL"
-    fi
-    if confirm "Uninstall ollama itself? (skip if other apps use it)"; then
-      if command -v brew >/dev/null 2>&1 && brew list ollama >/dev/null 2>&1; then
+  if command -v brew >/dev/null 2>&1; then
+    local shared=()
+    brew list ollama >/dev/null 2>&1 && shared+=(ollama)
+    brew list ffmpeg >/dev/null 2>&1 && shared+=(ffmpeg)
+    if [ ${#shared[@]} -gt 0 ] && \
+        confirm_no "Also uninstall the shared tools (${shared[*]})? Other apps may use them"; then
+      if brew list ollama >/dev/null 2>&1; then
         brew services stop ollama 2>/dev/null || true
         brew uninstall ollama
-      else
-        warn "ollama was not installed with Homebrew - remove it manually"
-      fi
-      if [ -d "$HOME/.ollama" ] && \
-          confirm "Also delete ~/.ollama (all remaining ollama models and keys)?"; then
         rm -rf "$HOME/.ollama"
       fi
+      if brew list ffmpeg >/dev/null 2>&1; then
+        brew uninstall ffmpeg
+      fi
     fi
-  fi
-
-  if command -v brew >/dev/null 2>&1 && brew list ffmpeg >/dev/null 2>&1; then
-    if confirm "Uninstall ffmpeg? (skip if other tools use it)"; then
-      brew uninstall ffmpeg
-    fi
-  fi
-
-  local hf_hub="${HF_HOME:-$HOME/.cache/huggingface}/hub"
-  local whisper_caches=("$hf_hub"/models--mlx-community--whisper-*)
-  if [ -e "${whisper_caches[0]}" ]; then
-    if confirm "Remove the downloaded Whisper models in $hf_hub (several GB)?"; then
-      rm -rf "${whisper_caches[@]}"
-    fi
-  fi
-
-  if [ -d "$HOME/.config/localflow" ]; then
-    if confirm "Delete settings, dictionary, and logs (~/.config/localflow)?"; then
-      rm -rf "$HOME/.config/localflow"
-    fi
-  fi
-
-  if [ -d "$VENV" ] || [ -d "$REPO_DIR/dist" ]; then
-    if confirm "Remove the build virtualenv and dist folder inside the repo?"; then
-      rm -rf "$VENV" "$REPO_DIR/dist"
-    fi
-  fi
-
-  if confirm "Reset the privacy permissions macOS recorded for $APP_NAME?"; then
-    tccutil reset All "$BUNDLE_ID" 2>/dev/null || warn \
-      "could not reset permissions - remove the $APP_NAME entries in System Settings -> Privacy & Security"
   fi
 
   log "uninstall finished (Homebrew itself and this repository were left in place)"
@@ -219,9 +241,22 @@ else
   "$VENV/bin/pip" install -q -e "$REPO_DIR"
 fi
 
+if [ "$BUILD_ONLY" != "1" ]; then
+  ensure_asr_model
+fi
+
 log "building $DIST_APP"
 rm -rf "$DIST_APP"
 mkdir -p "$DIST_APP/Contents/MacOS" "$DIST_APP/Contents/Resources"
+
+# Bundle a copy of the venv's real interpreter so macOS permission prompts
+# and grants name and track this app instead of "python3.x". The copy still
+# resolves the repo virtualenv: Contents/pyvenv.cfg marks Contents as the
+# venv prefix and the lib symlink points its site-packages at the checkout.
+PYTHON_REAL="$("$VENV/bin/python" -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+cp "$PYTHON_REAL" "$DIST_APP/Contents/MacOS/$APP_NAME-python"
+cp "$VENV/pyvenv.cfg" "$DIST_APP/Contents/pyvenv.cfg"
+ln -s "$VENV/lib" "$DIST_APP/Contents/lib"
 
 cat > "$DIST_APP/Contents/MacOS/$APP_NAME" <<EOF
 #!/bin/zsh
@@ -229,9 +264,8 @@ cat > "$DIST_APP/Contents/MacOS/$APP_NAME" <<EOF
 export PATH="/opt/homebrew/bin:/usr/local/bin:\$PATH"
 mkdir -p "\$HOME/.config/localflow"
 exec >>"\$HOME/.config/localflow/launcher.log" 2>&1
-# Run python as a child (not exec) so macOS attributes permission grants
-# (microphone, accessibility, input monitoring) to this app bundle.
-"$VENV/bin/python" -m localflow
+BIN_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+exec "\$BIN_DIR/$APP_NAME-python" -m localflow
 EOF
 chmod +x "$DIST_APP/Contents/MacOS/$APP_NAME"
 

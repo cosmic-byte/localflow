@@ -25,9 +25,10 @@ hotkey (hold = push-to-talk, double-tap = hands-free)
 
 The script handles the entire first-run setup interactively: it offers to
 install anything missing (Homebrew, ffmpeg, ollama), starts the ollama
-service, pulls the cleanup model, then builds `Whisper.app` and installs it
-to `/Applications` so the widget starts from Spotlight (Cmd+Space). Re-run it
-any time — completed steps are skipped.
+service, pulls the cleanup model, offers to pre-download the Whisper speech
+model (so the first dictation doesn't stall on a ~1.6 GB download), then
+builds `Whisper.app` and installs it to `/Applications` so the widget starts
+from Spotlight (Cmd+Space). Re-run it any time — completed steps are skipped.
 
 The bundle is a thin launcher around this checkout's virtualenv (created
 automatically), so keep the cloned folder around and re-run the script if you
@@ -46,10 +47,11 @@ uv venv && uv pip install -e ".[dev]"
 
 ## Run
 
-Option A: launch **Whisper** from Spotlight — the floating widget appears and
-the global hotkey is live. The first launch opens a short tour of the
-controls (click through or skip it; replay it any time via right-click →
-**Help**). Option B:
+Option A: launch **Whisper** from Spotlight — the floating widget appears
+immediately and the global hotkey is live. The speech model loads in the
+background (the pill's label reads "loading…" until it is ready). The first
+launch opens a short tour of the controls (click through or skip it; replay
+it any time via right-click → **Help**). Option B:
 
 ```sh
 localflow            # floating widget + global hotkey
@@ -91,13 +93,14 @@ System Settings → Keyboard → "Press fn key to" → "Do Nothing", or pick ano
 ./scripts/build_app.sh --uninstall
 ```
 
-Interactively undoes everything the installer set up: quits and removes
-`Whisper.app`, then offers to delete the pulled cleanup model, ollama itself,
-ffmpeg, the downloaded Whisper models, `~/.config/localflow` (settings,
-dictionary, logs), the repo's virtualenv, and the privacy permissions macOS
-recorded for the app. Every step asks first, so shared tools like ollama or
-ffmpeg can be kept (`ASSUME_YES=1` accepts everything). Homebrew itself and
-the cloned repository are left in place.
+Undoes everything the installer set up with two questions. The first
+(default yes) removes the app's own resources: `Whisper.app`, the pulled
+cleanup model, the downloaded Whisper models, `~/.config/localflow`
+(settings, dictionary, logs), the repo's virtualenv, and the privacy
+permissions macOS recorded for the app. The second (default no) additionally
+uninstalls the shared tools ollama and ffmpeg, which other apps may use.
+`ASSUME_YES=1` answers yes to both. Homebrew itself and the cloned
+repository are left in place.
 
 ## Config
 

@@ -2,29 +2,52 @@
 
 Provides a common Transcriber interface over two local Whisper backends:
 MLX (mlx-whisper, Apple Silicon GPU) and whisper.cpp (pywhispercpp). Both
-optional backend packages are imported defensively so the module stays
-importable when neither is installed; create_transcriber raises AsrError with
-an actionable install hint when the requested backend is missing.
+optional backend packages are imported lazily on first use: importing them
+takes over a second, and deferring that cost lets the widget appear before
+any backend loads. A missing package surfaces as AsrError with an actionable
+install hint. The ``mlx_whisper``/``WhisperCppModel`` module attributes stay
+patchable in tests: set them to a fake or None to bypass the lazy import.
 """
 
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 
-try:
-    import mlx_whisper
-except ImportError:
-    mlx_whisper = None
-
-try:
-    from pywhispercpp.model import Model as WhisperCppModel
-except ImportError:
-    WhisperCppModel = None
-
 log = logging.getLogger(__name__)
+
+_UNRESOLVED = object()
+
+mlx_whisper: Any = _UNRESOLVED
+WhisperCppModel: Any = _UNRESOLVED
+
+
+def _get_mlx_whisper() -> Any:
+    """Return the mlx_whisper module or None, importing it on first use."""
+    global mlx_whisper
+    if mlx_whisper is _UNRESOLVED:
+        try:
+            import mlx_whisper as module
+        except ImportError:
+            module = None
+        mlx_whisper = module
+    return mlx_whisper
+
+
+def _get_whispercpp_model() -> Any:
+    """Return the pywhispercpp Model class or None, importing it on first use."""
+    global WhisperCppModel
+    if WhisperCppModel is _UNRESOLVED:
+        try:
+            from pywhispercpp.model import Model as module
+        except ImportError:
+            module = None
+        WhisperCppModel = module
+    return WhisperCppModel
+
 
 SAMPLE_RATE = 16000
 _WARMUP_SECONDS = 0.5
@@ -161,7 +184,7 @@ class MlxWhisperTranscriber(Transcriber):
         Raises:
             AsrError: If the mlx-whisper package is not installed.
         """
-        if mlx_whisper is None:
+        if _get_mlx_whisper() is None:
             raise AsrError(_missing_package_message("mlx"))
         self.transcribe(_warmup_audio())
 
@@ -185,11 +208,12 @@ class MlxWhisperTranscriber(Transcriber):
             AsrError: If the package is missing, the audio is invalid, or
                 transcription fails.
         """
-        if mlx_whisper is None:
+        module = _get_mlx_whisper()
+        if module is None:
             raise AsrError(_missing_package_message("mlx"))
         _validate_audio(audio)
         try:
-            result = mlx_whisper.transcribe(
+            result = module.transcribe(
                 audio,
                 path_or_hf_repo=self.__repo,
                 language=language,
@@ -228,9 +252,10 @@ class WhisperCppTranscriber(Transcriber):
         Raises:
             AsrError: If the pywhispercpp package is not installed.
         """
-        if WhisperCppModel is None:
+        model_cls = _get_whispercpp_model()
+        if model_cls is None:
             raise AsrError(_missing_package_message("whispercpp"))
-        self.__model = WhisperCppModel(self.__model_id)
+        self.__model = model_cls(self.__model_id)
         self.transcribe(_warmup_audio())
 
     def transcribe(
@@ -257,7 +282,7 @@ class WhisperCppTranscriber(Transcriber):
             AsrError: If the model is not loaded, the audio is invalid, or
                 transcription fails.
         """
-        if WhisperCppModel is None:
+        if _get_whispercpp_model() is None:
             raise AsrError(_missing_package_message("whispercpp"))
         if self.__model is None:
             raise AsrError("whispercpp model is not loaded; call load() first.")
@@ -309,11 +334,11 @@ def create_transcriber(backend: str, model_name: str) -> Transcriber:
         AsrError: If the backend is unknown or its package is not installed.
     """
     if backend == "mlx":
-        if mlx_whisper is None:
+        if _get_mlx_whisper() is None:
             raise AsrError(_missing_package_message("mlx"))
         return MlxWhisperTranscriber(model_name)
     if backend == "whispercpp":
-        if WhisperCppModel is None:
+        if _get_whispercpp_model() is None:
             raise AsrError(_missing_package_message("whispercpp"))
         return WhisperCppTranscriber(model_name)
     raise AsrError(f"Unknown ASR backend {backend!r}. Expected 'mlx' or 'whispercpp'.")
