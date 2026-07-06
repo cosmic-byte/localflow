@@ -83,6 +83,20 @@ If the default `fn` hotkey conflicts with the system dictation shortcut, set
 System Settings → Keyboard → "Press fn key to" → "Do Nothing", or pick another hotkey in
 `~/.config/localflow/config.json` (e.g. `"ctrl+alt+space"`).
 
+## Uninstall
+
+```sh
+./scripts/build_app.sh --uninstall
+```
+
+Interactively undoes everything the installer set up: quits and removes
+`Whisper.app`, then offers to delete the pulled cleanup model, ollama itself,
+ffmpeg, the downloaded Whisper models, `~/.config/localflow` (settings,
+dictionary, logs), the repo's virtualenv, and the privacy permissions macOS
+recorded for the app. Every step asks first, so shared tools like ollama or
+ffmpeg can be kept (`ASSUME_YES=1` accepts everything). Homebrew itself and
+the cloned repository are left in place.
+
 ## Config
 
 - `~/.config/localflow/config.json` — settings (models, hotkey, microphone, tone).

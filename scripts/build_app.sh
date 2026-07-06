@@ -14,6 +14,7 @@
 #
 # Usage:
 #   ./scripts/build_app.sh                     # deps (interactive) + build + install
+#   ./scripts/build_app.sh --uninstall         # interactively undo the install
 #   ASSUME_YES=1 ./scripts/build_app.sh        # accept every prompt automatically
 #   BUILD_ONLY=1 ./scripts/build_app.sh        # build dist/<name>.app only, skip deps
 #   INSTALL_DIR=~/Applications ./scripts/build_app.sh
@@ -32,6 +33,15 @@ OLLAMA_URL="http://localhost:11434"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="$REPO_DIR/.venv"
 DIST_APP="$REPO_DIR/dist/$APP_NAME.app"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+UNINSTALL=0
+for arg in "$@"; do
+  case "$arg" in
+    --uninstall) UNINSTALL=1 ;;
+    *) printf 'unknown argument: %s (supported: --uninstall)\n' "$arg" >&2; exit 1 ;;
+  esac
+done
 
 log()  { printf '\033[0;32m[build-app]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[build-app]\033[0m %s\n' "$*"; }
@@ -114,7 +124,80 @@ ensure_runtime_deps() {
   fi
 }
 
+# Undo everything the installer set up. Every step is confirmed individually
+# so a user who shares ollama/ffmpeg with other tools can keep them; only
+# Homebrew itself and this cloned repository are always left in place.
+uninstall() {
+  local app_path="$INSTALL_DIR/$APP_NAME.app"
+
+  if [ -d "$app_path" ] && confirm "Quit $APP_NAME and remove $app_path?"; then
+    pkill -f -- "-m localflow" 2>/dev/null || true
+    if [ -x "$LSREGISTER" ]; then
+      "$LSREGISTER" -u "$app_path" 2>/dev/null || true
+    fi
+    rm -rf "$app_path"
+    log "removed $app_path"
+  fi
+
+  if command -v ollama >/dev/null 2>&1; then
+    if ollama_running && ollama list 2>/dev/null | grep -qF "$CLEANUP_MODEL" && \
+        confirm "Remove the cleanup model $CLEANUP_MODEL (frees ~4.7 GB)?"; then
+      ollama rm "$CLEANUP_MODEL"
+    fi
+    if confirm "Uninstall ollama itself? (skip if other apps use it)"; then
+      if command -v brew >/dev/null 2>&1 && brew list ollama >/dev/null 2>&1; then
+        brew services stop ollama 2>/dev/null || true
+        brew uninstall ollama
+      else
+        warn "ollama was not installed with Homebrew - remove it manually"
+      fi
+      if [ -d "$HOME/.ollama" ] && \
+          confirm "Also delete ~/.ollama (all remaining ollama models and keys)?"; then
+        rm -rf "$HOME/.ollama"
+      fi
+    fi
+  fi
+
+  if command -v brew >/dev/null 2>&1 && brew list ffmpeg >/dev/null 2>&1; then
+    if confirm "Uninstall ffmpeg? (skip if other tools use it)"; then
+      brew uninstall ffmpeg
+    fi
+  fi
+
+  local hf_hub="${HF_HOME:-$HOME/.cache/huggingface}/hub"
+  local whisper_caches=("$hf_hub"/models--mlx-community--whisper-*)
+  if [ -e "${whisper_caches[0]}" ]; then
+    if confirm "Remove the downloaded Whisper models in $hf_hub (several GB)?"; then
+      rm -rf "${whisper_caches[@]}"
+    fi
+  fi
+
+  if [ -d "$HOME/.config/localflow" ]; then
+    if confirm "Delete settings, dictionary, and logs (~/.config/localflow)?"; then
+      rm -rf "$HOME/.config/localflow"
+    fi
+  fi
+
+  if [ -d "$VENV" ] || [ -d "$REPO_DIR/dist" ]; then
+    if confirm "Remove the build virtualenv and dist folder inside the repo?"; then
+      rm -rf "$VENV" "$REPO_DIR/dist"
+    fi
+  fi
+
+  if confirm "Reset the privacy permissions macOS recorded for $APP_NAME?"; then
+    tccutil reset All "$BUNDLE_ID" 2>/dev/null || warn \
+      "could not reset permissions - remove the $APP_NAME entries in System Settings -> Privacy & Security"
+  fi
+
+  log "uninstall finished (Homebrew itself and this repository were left in place)"
+}
+
 [ "$(uname)" = "Darwin" ] || { warn "macOS only"; exit 1; }
+
+if [ "$UNINSTALL" = "1" ]; then
+  uninstall
+  exit 0
+fi
 
 if [ "$BUILD_ONLY" != "1" ]; then
   ensure_runtime_deps
@@ -198,8 +281,9 @@ log "installing to $INSTALL_DIR/$APP_NAME.app"
 rm -rf "$INSTALL_DIR/$APP_NAME.app"
 cp -R "$DIST_APP" "$INSTALL_DIR/$APP_NAME.app"
 
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-[ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$INSTALL_DIR/$APP_NAME.app"
+if [ -x "$LSREGISTER" ]; then
+  "$LSREGISTER" -f "$INSTALL_DIR/$APP_NAME.app"
+fi
 
 log "done. Launch \"$APP_NAME\" from Spotlight (Cmd+Space)."
 log "First launch: grant Microphone, Accessibility and Input Monitoring to $APP_NAME in System Settings -> Privacy & Security."
