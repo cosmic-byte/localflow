@@ -17,7 +17,7 @@ import time
 import objc
 from AppKit import (
     NSApplication,
-    NSApplicationActivationPolicyRegular,
+    NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
     NSBezierPath,
     NSColor,
@@ -51,7 +51,7 @@ from AppKit import (
     NSWindowMiniaturizeButton,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskFullSizeContentView,
-    NSWindowStyleMaskMiniaturizable,
+    NSWindowStyleMaskNonactivatingPanel,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
     NSWindowTitleHidden,
@@ -60,6 +60,7 @@ from AppKit import (
 
 from localflow.capture import list_audio_devices
 from localflow.config import AppConfig
+from localflow.onboarding import OnboardingController
 
 log = logging.getLogger(__name__)
 
@@ -123,12 +124,15 @@ STATE_ERROR = 4
 ASR_MODELS = ("base", "small", "large-v3-turbo")
 CLEANUP_MODELS = ("qwen2.5:7b", "llama3.2:3b")
 
+# NonactivatingPanel keeps the widget from stealing focus from the app being
+# dictated into; Miniaturizable is omitted because an agent app (LSUIElement)
+# has no Dock icon to restore a minimized window from.
 PANEL_STYLE_MASK = (
     NSWindowStyleMaskTitled
     | NSWindowStyleMaskClosable
-    | NSWindowStyleMaskMiniaturizable
     | NSWindowStyleMaskResizable
     | NSWindowStyleMaskFullSizeContentView
+    | NSWindowStyleMaskNonactivatingPanel
 )
 
 
@@ -845,6 +849,12 @@ def _append_settings_items(menu: NSMenu, config: AppConfig, handler) -> None:
     log_item.setTarget_(handler)
     menu.addItem_(log_item)
 
+    help_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Help", "showHelp:", ""
+    )
+    help_item.setTarget_(handler)
+    menu.addItem_(help_item)
+
 
 def _append_quit_item(menu: NSMenu, handler, title: str = "Quit") -> None:
     """Append a separator and quit item to a menu.
@@ -895,6 +905,7 @@ class MenuHandler(NSObject):
 
     controller = objc.ivar()
     widget = objc.ivar()
+    onboarding = objc.ivar()
 
     def initWithController_widget_(self, controller, widget):
         """Initialize the handler.
@@ -940,6 +951,10 @@ class MenuHandler(NSObject):
     def openLog_(self, sender):
         self.controller.open_log()
 
+    def showHelp_(self, sender):
+        if self.onboarding is not None:
+            self.onboarding.show()
+
     def quit_(self, sender):
         NSApplication.sharedApplication().terminate_(None)
 
@@ -951,7 +966,7 @@ def run_app(controller) -> None:
         controller: The FlowController that owns the pipeline and settings.
     """
     app = NSApplication.sharedApplication()
-    app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
     config = controller.config
     panel = create_panel(config)
@@ -977,6 +992,11 @@ def run_app(controller) -> None:
     panel.makeKeyAndOrderFront_(None)
     traffic_lights = TrafficLightHoverController.alloc().init()
     traffic_lights.installWithPanel_(panel)
+
+    onboarding = OnboardingController.alloc().initWithConfig_(config)
+    handler.onboarding = onboarding
+    if not config.onboarding_done:
+        onboarding.show()
 
     controller.attach_ui(widget)
     controller.start()

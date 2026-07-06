@@ -17,38 +17,39 @@ hotkey (hold = push-to-talk, double-tap = hands-free)
 
 ## Install
 
-Runtime dependencies first (both install options need them):
-
-```sh
-brew install ollama ffmpeg
-ollama pull qwen2.5:7b
-```
-
-### Option A — app bundle (no terminal)
-
-Builds `Whisper.app` and installs it to `/Applications`, so the widget starts
-from Spotlight (Cmd+Space) or the Dock like any other Mac app:
+### Option A — app bundle (one command, no terminal afterwards)
 
 ```sh
 ./scripts/build_app.sh
 ```
 
+The script handles the entire first-run setup interactively: it offers to
+install anything missing (Homebrew, ffmpeg, ollama), starts the ollama
+service, pulls the cleanup model, then builds `Whisper.app` and installs it
+to `/Applications` so the widget starts from Spotlight (Cmd+Space). Re-run it
+any time — completed steps are skipped.
+
 The bundle is a thin launcher around this checkout's virtualenv (created
 automatically), so keep the cloned folder around and re-run the script if you
-move it. Variants: `INSTALL_DIR=~/Applications`, `APP_NAME=LocalFlow`,
-`BUILD_ONLY=1` (build `dist/` without installing). Logs from app launches go
-to `~/.config/localflow/launcher.log`.
+move it. Variants: `ASSUME_YES=1` (accept every prompt, for scripted
+installs), `INSTALL_DIR=~/Applications`, `APP_NAME=LocalFlow`, `BUILD_ONLY=1`
+(build `dist/` without installing). Logs from app launches go to
+`~/.config/localflow/launcher.log`.
 
 ### Option B — CLI
 
 ```sh
+brew install ollama ffmpeg
+ollama pull qwen2.5:7b
 uv venv && uv pip install -e ".[dev]"
 ```
 
 ## Run
 
 Option A: launch **Whisper** from Spotlight — the floating widget appears and
-the global hotkey is live. Option B:
+the global hotkey is live. The first launch opens a short tour of the
+controls (click through or skip it; replay it any time via right-click →
+**Help**). Option B:
 
 ```sh
 localflow            # floating widget + global hotkey
@@ -58,17 +59,17 @@ localflow --cli --duration 5
 
 ## Window controls
 
-The widget window has standard macOS **traffic light buttons** in the top-left
-corner:
+The widget is a background overlay: it floats above every app and Space,
+never steals focus from the app you are dictating into, and has no Dock icon
+or Cmd+Tab entry. Hovering over the pill reveals the **traffic light
+buttons** in its top-left corner:
 
 - **Red (close)** — quit the app
-- **Yellow (minimize)** — minimize the widget to the Dock (click the Dock icon
-  to restore it)
 - **Green (zoom)** — reserved for the fixed-size widget (size does not change)
 
-**Right-click the pill** to change microphone, ASR model, cleanup settings, and
-more. You can also drag the pill to the **bottom-right corner** of the screen to
-quit.
+**Right-click the pill** to change microphone, ASR model, cleanup settings,
+replay the onboarding tour (**Help**), and more. You can also drag the pill to
+the **bottom-right corner** of the screen to quit.
 
 ## Permissions (one-time)
 
@@ -83,6 +84,20 @@ terminal:
 If the default `fn` hotkey conflicts with the system dictation shortcut, set
 System Settings → Keyboard → "Press fn key to" → "Do Nothing", or pick another hotkey in
 `~/.config/localflow/config.json` (e.g. `"ctrl+alt+space"`).
+
+## Uninstall
+
+```sh
+./scripts/build_app.sh --uninstall
+```
+
+Interactively undoes everything the installer set up: quits and removes
+`Whisper.app`, then offers to delete the pulled cleanup model, ollama itself,
+ffmpeg, the downloaded Whisper models, `~/.config/localflow` (settings,
+dictionary, logs), the repo's virtualenv, and the privacy permissions macOS
+recorded for the app. Every step asks first, so shared tools like ollama or
+ffmpeg can be kept (`ASSUME_YES=1` accepts everything). Homebrew itself and
+the cloned repository are left in place.
 
 ## Config
 
